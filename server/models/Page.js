@@ -1,80 +1,49 @@
 const mongoose = require("mongoose");
 
 /**
- * PageSchema — represents a single crawled web page.
+ * Schema representing a single crawled web page.
  *
- * This is the primary output document of the crawler stage.
- * The `links` array encodes the adjacency list for the crawl graph.
- * Future indexing and ranking stages will consume these documents.
+ * url     - The canonical URL of the page (unique index prevents duplicate crawls).
+ * title   - The <title> tag content.
+ * content - Cleaned body text (first 5 000 characters to keep documents lean).
+ * links   - All absolute hrefs extracted from <a> tags on this page.
+ * depth   - BFS depth at which this page was discovered.
+ * crawledAt - Timestamp of when this page was stored.
  */
 const pageSchema = new mongoose.Schema(
   {
-    // ── Core Identity ────────────────────────────────────────────────────────
     url: {
       type: String,
       required: true,
-      unique: true,        // Enforces de-duplication at DB level
+      unique: true,
       trim: true,
-      index: true,
     },
-
-    // ── Extracted Content ────────────────────────────────────────────────────
     title: {
       type: String,
-      default: "",
+      default: "No title",
       trim: true,
     },
-
     content: {
       type: String,
       default: "",
     },
-
-    // ── Graph / Link Data (Adjacency List) ───────────────────────────────────
     links: {
       type: [String],
       default: [],
     },
-
-    // ── Crawl Metadata ───────────────────────────────────────────────────────
     depth: {
       type: Number,
       default: 0,
-      min: 0,
     },
-
-    crawlSessionId: {
-      type: String,
-      required: true,
-      index: true,           // Enables querying all pages from a single crawl
-    },
-
-    statusCode: {
-      type: Number,
-      default: 200,
-    },
-
     crawledAt: {
       type: Date,
       default: Date.now,
     },
-
-    // ── Error Tracking ───────────────────────────────────────────────────────
-    error: {
-      type: String,
-      default: null,
-    },
   },
-  {
-    timestamps: true,          // adds createdAt + updatedAt
-    versionKey: false,
-  }
+  { timestamps: true }
 );
 
-// ── Text index for future full-text search (indexing stage) ──────────────────
+// Full-text index so the indexer stage can query efficiently
 pageSchema.index({ title: "text", content: "text" });
-
-// ── Compound index for efficient session-scoped queries ──────────────────────
-pageSchema.index({ crawlSessionId: 1, depth: 1 });
 
 module.exports = mongoose.model("Page", pageSchema);
