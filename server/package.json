@@ -1,0 +1,27 @@
+{
+  "name": "search-engine-crawler",
+  "version": "1.0.0",
+  "description": "Scalable web crawler backend service — Stage 1 of a search engine pipeline (crawl → index → rank)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["web-crawler", "search-engine", "BFS", "Express", "MongoDB"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.7",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "mongoose": "^8.1.1",
+    "morgan": "^1.10.0",
+    "valid-url": "^1.0.9"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
