@@ -8,8 +8,14 @@
  */
 
 const validUrl = require("valid-url");
-const { runCrawler } = require("../crawler/crawler"); // ← updated import
-const Page = require("../models/Page");
+const { runCrawler }       = require("../crawler/crawler");
+const {
+  getPagesPaginated,
+  getTotalPageCount,
+  getTopHubs,
+  getPageById,
+  clearAll,
+} = require("../services/storageService");
 
 // ─── POST /api/crawl ──────────────────────────────────────────────────────────
 
@@ -102,37 +108,32 @@ exports.startCrawl = async (req, res) => {
   }
 };
 
-// ─── GET /api/crawl/pages ─────────────────────────────────────────────────────
+// ─── GET /api/crawl/pages ────────────────────────────────────────────────────────────────
 
 /**
- * Return a paginated list of all crawled pages from MongoDB.
- * Excludes the heavy `content` field for performance.
+ * Return a paginated list of crawled pages.
+ *
+ * Delegates entirely to storageService.getPagesPaginated.
+ * Returns a lightweight shape — no full content, no full links array:
+ *
+ *   [{ url, title, contentSnippet, linksCount, depth, crawledAt }]
  *
  * Query params:
  *   ?page=1&limit=20
  */
 exports.getPages = async (req, res) => {
   try {
-    let page  = parseInt(req.query.page,  10) || 1;
-    let limit = parseInt(req.query.limit, 10) || 20;
-    if (limit > 100) limit = 100;
-    const skip = (page - 1) * limit;
+    const page  = parseInt(req.query.page,  10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
 
-    const [pages, total] = await Promise.all([
-      Page.find({}, { content: 0 })   // exclude heavy content field
-        .sort({ crawledAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Page.countDocuments(),
-    ]);
+    const data = await getPagesPaginated({ page, limit });
 
     return res.status(200).json({
-      success: true,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-      pages,
+      success:    true,
+      total:      data.total,
+      page:       data.page,
+      totalPages: data.totalPages,
+      results:    data.results,   // [{ url, title, contentSnippet, linksCount, ... }]
     });
   } catch (err) {
     console.error("[API] getPages error:", err.message);
@@ -147,7 +148,7 @@ exports.getPages = async (req, res) => {
  */
 exports.getPageById = async (req, res) => {
   try {
-    const page = await Page.findById(req.params.id).lean();
+    const page = await getPageById(req.params.id);
     if (!page) {
       return res.status(404).json({ success: false, error: "Page not found." });
     }
@@ -166,7 +167,7 @@ exports.getPageById = async (req, res) => {
  */
 exports.clearPages = async (req, res) => {
   try {
-    const { deletedCount } = await Page.deleteMany({});
+    const { deletedCount } = await clearAll();
     console.log(`[API] Cleared ${deletedCount} page(s) from DB`);
     return res.status(200).json({
       success: true,
@@ -178,7 +179,7 @@ exports.clearPages = async (req, res) => {
   }
 };
 
-// ─── GET /api/crawl/stats ─────────────────────────────────────────────────────
+// ─── GET /api/crawl/stats ────────────────────────────────────────────────────────────────
 
 /**
  * Quick database statistics — no new crawl is triggered.
@@ -186,20 +187,10 @@ exports.clearPages = async (req, res) => {
  */
 exports.getStats = async (req, res) => {
   try {
+    const { getTopHubs } = require("../services/storageService");
     const [totalPages, topLinked] = await Promise.all([
-      Page.countDocuments(),
-      Page.aggregate([
-        {
-          $project: {
-            url: 1,
-            title: 1,
-            depth: 1,
-            linkCount: { $size: "$links" },
-          },
-        },
-        { $sort: { linkCount: -1 } },
-        { $limit: 5 },
-      ]),
+      getTotalPageCount(),
+      getTopHubs(5),
     ]);
 
     return res.status(200).json({
@@ -211,3 +202,4 @@ exports.getStats = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+

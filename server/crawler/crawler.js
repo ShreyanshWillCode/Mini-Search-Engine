@@ -20,6 +20,9 @@
  *  parser.js                   (HTML → title / content / links)
  *  urlUtils.js                 (URL normalisation & validation)
  *
+ *  DB access is fully delegated to:
+ *  ../services/storageService  (upsert, existence check, stats)
+ *
  * BFS ALGORITHM (high level)
  * ─────────────────────────────────────────────────────────────────────────────
  *  Init:  queue   ← [{ url: seedURL, depth: 0 }]
@@ -39,9 +42,9 @@
 
 const axios   = require("axios");
 const Queue   = require("./queue");
-const { parsePage }           = require("./parser");
-const { normalizeUrl, isValidWebUrl } = require("./urlUtils");
-const Page    = require("../models/Page");
+const { parsePage }                       = require("./parser");
+const { isValidWebUrl }                   = require("./urlUtils");
+const { existsInDB, upsertPage, getTotalPageCount } = require("../services/storageService");
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
 
@@ -119,35 +122,7 @@ async function fetchHtml(url) {
   }
 }
 
-/**
- * Check whether a URL has already been saved in MongoDB.
- * This is a SECOND layer of dedup on top of the in-memory visited Set.
- * Protects against:
- *   - Server restarts mid-crawl (visited Set is wiped, DB persists)
- *   - Re-running the same crawl job
- *
- * @param {string} url
- * @returns {Promise<boolean>}
- */
-async function isAlreadyInDB(url) {
-  const exists = await Page.exists({ url });
-  return !!exists;
-}
-
-/**
- * Persist (or update) a crawled page document in MongoDB.
- * Uses upsert so re-crawling the same URL updates rather than duplicates.
- *
- * @param {{ url, title, content, links, depth }} pageData
- * @returns {Promise<void>}
- */
-async function savePage({ url, title, content, links, depth }) {
-  await Page.findOneAndUpdate(
-    { url },
-    { url, title, content, links, depth, crawledAt: new Date() },
-    { upsert: true, new: true, runValidators: true }
-  );
-}
+// (DB helpers removed — use storageService.existsInDB / storageService.upsertPage)
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
@@ -250,7 +225,8 @@ async function runCrawler({
     // ── Dual-layer duplicate check ────────────────────────────────────────
     // Layer 1 (fast): visited Set — already checked when enqueuing
     // Layer 2 (safe): MongoDB    — catches URLs from previous crawl runs
-    const alreadyStored = await isAlreadyInDB(url);
+    //                 (via storageService.existsInDB — no DB logic here)
+    const alreadyStored = await existsInDB(url);
     if (alreadyStored) {
       log.info(`Already in DB — skipping: ${url}`);
       skipped++;
@@ -277,11 +253,14 @@ async function runCrawler({
       continue;
     }
 
-    // ── Persist to MongoDB ────────────────────────────────────────────────
+    // ── Persist to MongoDB (via storageService) ───────────────────────────
+    // storageService.upsertPage is the ONLY DB write in this pipeline.
+    // It handles sanitisation, atomic upsert, duplicate key recovery,
+    // and returns { status: 'inserted' | 'updated' } for observability.
     try {
-      await savePage({ url, title, content, links, depth });
+      const { status } = await upsertPage({ url, title, content, links, depth });
       pagesCrawled++;
-      log.ok(`Saved [${pagesCrawled}/${maxPages}]  "${title}"  →  ${url}`);
+      log.ok(`[${status.toUpperCase()}] [${pagesCrawled}/${maxPages}]  "${title}"  →  ${url}`);
     } catch (dbErr) {
       log.error(`DB save failed for ${url}: ${dbErr.message}`);
       failed++;
@@ -337,7 +316,7 @@ async function runCrawler({
 
   // ── Final stats ───────────────────────────────────────────────────────────
   const duration  = Date.now() - startTime;
-  const pagesInDB = await Page.countDocuments();
+  const pagesInDB = await getTotalPageCount(); // via storageService
 
   log.info("─".repeat(60));
   log.info(`Crawl complete in ${(duration / 1000).toFixed(2)}s`);
