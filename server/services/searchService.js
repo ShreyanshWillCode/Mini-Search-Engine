@@ -21,6 +21,7 @@
 "use strict";
 
 const InvertedIndex      = require("../models/InvertedIndex");
+const Page               = require("../models/Page");
 const { tokenizeToArray } = require("../indexer/tokenizer");
 
 // ── Core export ───────────────────────────────────────────────────────────────
@@ -48,19 +49,19 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
     return { query: queryString, tokens: [], strategy, total: 0, results: [] };
   }
 
-  // ── 1. Fetch posting lists for each token ───────────────────────────────────
+  // ── 1. Fetch total doc count & posting lists concurrently ──────────────────
   //
-  //  One DB query per token.  We project only the `documents` array — we don't
-  //  need `word` or timestamps in the response.
+  //  N = Total documents in corpus (for IDF calculation)
   //
-  //  Using Promise.all: all token lookups fire concurrently — faster than
-  //  sequential awaits when query has multiple tokens.
-  //
-  const postingLists = await Promise.all(
-    tokens.map((token) =>
+  const [totalDocs, ...postingLists] = await Promise.all([
+    Page.countDocuments(),
+    ...tokens.map((token) =>
       InvertedIndex.findOne({ word: token }, { documents: 1, _id: 0 }).lean()
-    )
-  );
+    ),
+  ]);
+
+  // Handle empty corpus edge case
+  const N = totalDocs || 1;
 
   // ── 2. Build a score map:  docId → { url, title, score, matchedTokens } ────
   //
@@ -77,20 +78,25 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
     const postingList = postingLists[i];
     if (!postingList || !postingList.documents) continue;
 
+    // IDF = log10(Total Docs / Docs containing this word)
+    // We add 1 to denominator to avoid division by zero (though posting list exists)
+    const df = postingList.documents.length;
+    const idf = Math.log10(N / df);
+
     for (const posting of postingList.documents) {
       const { docId, url, title, frequency } = posting;
+      const tfIdfScore = frequency * idf;
 
       if (scoreMap.has(docId)) {
-        // O(1) lookup — accumulate score and track matched token count
         const entry = scoreMap.get(docId);
-        entry.score        += frequency;
+        entry.score        += tfIdfScore;
         entry.matchedTokens += 1;
       } else {
-        // O(1) insert — new document seen for the first time
         scoreMap.set(docId, {
+          docId,
           url,
           title,
-          score:         frequency,
+          score:         tfIdfScore,
           matchedTokens: 1,
         });
       }
@@ -111,18 +117,93 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
   // ── 4. Sort by score descending, slice to limit ─────────────────────────────
 
   candidates.sort((a, b) => b.score - a.score);
-  const results = candidates.slice(0, Math.max(1, parseInt(limit, 10) || 10));
+  const topCandidates = candidates.slice(0, Math.max(1, parseInt(limit, 10) || 10));
 
-  // Clean up internal fields before returning
-  const clean = results.map(({ url, title, score }) => ({ url, title, score }));
+  // ── 5. Enrichment: Snippets & Highlighting ──────────────────────────────────
+  //
+  // To show snippets, we need the actual page content.
+  // We fetch only the 'content' field for the top results.
+  //
+  const enrichedResults = await Promise.all(
+    topCandidates.map(async (candidate) => {
+      const page = await Page.findById(candidate.docId, { content: 1 }).lean();
+      const content = page ? page.content : "";
+      
+      const snippet = generateHighlightedSnippet(content, tokens);
+      
+      return {
+        url:     candidate.url,
+        title:   candidate.title,
+        score:   +(candidate.score.toFixed(4)),
+        snippet,
+      };
+    })
+  );
 
   return {
     query:    queryString,
     tokens,
     strategy,
     total:    candidates.length,
-    results:  clean,
+    results:  enrichedResults,
   };
+}
+
+/**
+ * generateHighlightedSnippet(content, queryTokens)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Finds a relevant window of text around the first matching query token.
+ * Wraps matched tokens in <b> tags.
+ */
+function generateHighlightedSnippet(content, queryTokens) {
+  if (!content) return "";
+
+  const windowSize = 160;
+  let firstMatchIdx = -1;
+  let foundToken = "";
+
+  // Find the first occurrence of any query token
+  const contentLower = content.toLowerCase();
+  for (const token of queryTokens) {
+    const idx = contentLower.indexOf(token.toLowerCase());
+    if (idx !== -1 && (firstMatchIdx === -1 || idx < firstMatchIdx)) {
+      firstMatchIdx = idx;
+      foundToken = token;
+    }
+  }
+
+  // If no match found (rare if it's in the index), just return start
+  if (firstMatchIdx === -1) {
+    return content.slice(0, windowSize) + "...";
+  }
+
+  // Determine start/end of snippet window
+  let start = Math.max(0, firstMatchIdx - 60);
+  let end = Math.min(content.length, start + windowSize);
+
+  // Adjust start to not break words if possible
+  if (start > 0) {
+    const firstSpace = content.indexOf(" ", start);
+    if (firstSpace !== -1 && firstSpace < firstMatchIdx) {
+      start = firstSpace + 1;
+    }
+  }
+
+  let snippet = content.slice(start, end);
+  if (start > 0) snippet = "..." + snippet;
+  if (end < content.length) snippet = snippet + "...";
+
+  // Highlight all tokens in the snippet
+  // Use regex with 'gi' (global, case-insensitive)
+  let highlighted = snippet;
+  for (const token of queryTokens) {
+    // Escape regex special chars in token
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(${escaped})`, "gi");
+    highlighted = highlighted.replace(re, "<b>$1</b>");
+  }
+
+  return highlighted;
 }
 
 /**
