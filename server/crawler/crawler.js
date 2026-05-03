@@ -45,6 +45,7 @@ const Queue   = require("./queue");
 const { parsePage }                       = require("./parser");
 const { isValidWebUrl }                   = require("./urlUtils");
 const { existsInDB, upsertPage, getTotalPageCount } = require("../services/storageService");
+const indexQueue                          = require("../indexer/indexQueue");
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
 
@@ -256,15 +257,25 @@ async function runCrawler({
     // ── Persist to MongoDB (via storageService) ───────────────────────────
     // storageService.upsertPage is the ONLY DB write in this pipeline.
     // It handles sanitisation, atomic upsert, duplicate key recovery,
-    // and returns { status: 'inserted' | 'updated' } for observability.
+    // and returns { status: 'inserted' | 'updated', docId } for observability.
+    let docId;
     try {
-      const { status } = await upsertPage({ url, title, content, links, depth });
+      const saved = await upsertPage({ url, title, content, links, depth });
+      docId = saved.docId;
       pagesCrawled++;
-      log.ok(`[${status.toUpperCase()}] [${pagesCrawled}/${maxPages}]  "${title}"  →  ${url}`);
+      log.ok(`[${saved.status.toUpperCase()}] [${pagesCrawled}/${maxPages}]  "${title}"  →  ${url}`);
     } catch (dbErr) {
       log.error(`DB save failed for ${url}: ${dbErr.message}`);
       failed++;
       continue;
+    }
+
+    // ── Queue page for incremental index update (non-blocking) ──────────
+    // push() is O(1) synchronous — never blocks the BFS loop.
+    // The queue flushes in the background in batches of 10 pages.
+    // drain() is called after the loop to flush any remaining items.
+    if (docId) {
+      indexQueue.push({ _id: docId, url, title, content });
     }
 
     // ── Enqueue neighbours ────────────────────────────────────────────────
@@ -312,6 +323,17 @@ async function runCrawler({
     if (delayMs > 0 && !queue.isEmpty()) {
       await delay(delayMs);
     }
+  }
+
+  // ── Drain index queue ─────────────────────────────────────────────────────
+  // Flush all pages still pending in the queue before computing final stats.
+  // This ensures the index reflects every page crawled in this run.
+  try {
+    await indexQueue.drain();
+    const qs = indexQueue.stats;
+    log.info(`Index queue drained — ${qs.totalFlushed} page(s) indexed in ${qs.flushCount} batch(es)`);
+  } catch (idxErr) {
+    log.warn(`Index drain error: ${idxErr.message}`);
   }
 
   // ── Final stats ───────────────────────────────────────────────────────────

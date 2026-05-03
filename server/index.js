@@ -18,8 +18,13 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 
-const connectDB = require("./config/db");
-const crawlerRoutes = require("./routes/crawlerRoutes");
+const connectDB      = require("./config/db");
+const crawlerRoutes  = require("./routes/crawlerRoutes");
+const searchRoutes   = require("./routes/searchRoutes");
+
+// Warm-start the index queue singleton so its background timer is running
+// before the first crawl request arrives (avoids lazy-init on first push).
+require("./indexer/indexQueue");
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
@@ -40,20 +45,26 @@ app.get("/", (req, res) => {
   res.json({
     status: "ok",
     service: "Search Engine Crawler",
-    version: "1.0.0",
+    version: "2.0.0",
     timestamp: new Date().toISOString(),
     endpoints: {
       "POST /api/crawl":           "Start a new crawl { seedURL, maxDepth, maxPages }",
-      "GET  /api/crawl/stats":     "Quick DB statistics",
-      "GET  /api/crawl/pages":     "Paginated crawled pages list ?page=1&limit=20",
+      "GET  /api/crawl/stats":     "Crawler DB statistics",
+      "GET  /api/crawl/pages":     "Paginated crawled pages ?page=1&limit=20",
       "GET  /api/crawl/pages/:id": "Single crawled page by Mongo _id",
       "DELETE /api/crawl/pages":   "Clear all crawled pages",
+      "/api/search":               "Search index ?q=query&strategy=union&limit=10",
+      "POST /api/index/rebuild":   "Full index rebuild (wipes + re-indexes all pages)",
+      "GET  /api/index/stats":     "Inverted index statistics",
     },
   });
 });
 
 // Crawler API
 app.use("/api/crawl", crawlerRoutes);
+
+// Search + Index API
+app.use("/api", searchRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {

@@ -91,9 +91,8 @@ async function upsertPage(pageData) {
 
   try {
     const result = await Page.updateOne(
-      { url: data.url },         // filter by canonical URL
+      { url: data.url },
       {
-        // $set runs on BOTH insert and update — keeps document fresh
         $set: {
           title:     data.title,
           content:   data.content,
@@ -101,30 +100,30 @@ async function upsertPage(pageData) {
           depth:     data.depth,
           crawledAt: new Date(),
         },
-        // $setOnInsert runs ONLY when a new document is created
-        // Using it for url makes the intent explicit, though the filter
-        // would already supply it via upsert's implicit field merging.
-        $setOnInsert: {
-          url: data.url,
-        },
+        $setOnInsert: { url: data.url },
       },
-      {
-        upsert:        true,
-        runValidators: true, // enforce schema-level validation on $set fields
-      }
+      { upsert: true, runValidators: true }
     );
 
     // result.upsertedId is non-null only when a brand-new doc was created
-    const status = result.upsertedId ? "inserted" : "updated";
-    return { status, url: data.url };
+    const inserted = !!result.upsertedId;
+    const status   = inserted ? "inserted" : "updated";
+
+    // Resolve the document _id:
+    //   - On insert: result.upsertedId IS the new _id (no extra query)
+    //   - On update: do a lightweight findOne projection (indexed url → fast)
+    const docId = inserted
+      ? String(result.upsertedId)
+      : String((await Page.findOne({ url: data.url }, { _id: 1 }).lean())._id);
+
+    return { status, url: data.url, docId };
 
   } catch (err) {
-    // Duplicate key: another process inserted this URL concurrently.
-    // Treat as a successful no-op — the document already exists.
     if (err.code === MONGO_DUPLICATE_KEY) {
-      return { status: "updated", url: data.url };
+      // Concurrent insert race — doc exists; resolve its _id
+      const existing = await Page.findOne({ url: data.url }, { _id: 1 }).lean();
+      return { status: "updated", url: data.url, docId: existing ? String(existing._id) : null };
     }
-    // Re-throw all other errors (validation, network) for the caller to handle
     throw err;
   }
 }

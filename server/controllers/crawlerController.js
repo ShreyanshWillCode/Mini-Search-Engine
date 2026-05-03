@@ -86,8 +86,9 @@ exports.startCrawl = async (req, res) => {
     // ── Run the BFS crawler ───────────────────────────────────────────────
     const result = await runCrawler({ seedURL, maxDepth, maxPages, delayMs, sameDomain });
 
-    // ── Response — matches spec: { pagesCrawled, status } ─────────────────
+    // ── Response ──────────────────────────────────────────────────────
     return res.status(200).json({
+      success:      true,
       pagesCrawled: result.pagesCrawled,
       status:       result.status,
       stats: {
@@ -95,7 +96,6 @@ exports.startCrawl = async (req, res) => {
         skipped:     result.skipped,
         pagesInDB:   result.pagesInDB,
         duration:    result.duration,
-        // +(...) coerces toFixed's string → number. Guard keeps 0 if duration is undefined.
         durationSec: result.duration != null ? +(result.duration / 1000).toFixed(2) : 0,
       },
     });
