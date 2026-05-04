@@ -66,6 +66,9 @@ app.use("/api/crawl", crawlerRoutes);
 // Search + Index API
 app.use("/api", searchRoutes);
 
+// Ranking API
+app.use("/api/rank", require("./routes/rankRoutes"));
+
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.path} not found.` });

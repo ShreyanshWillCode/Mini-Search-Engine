@@ -56,6 +56,13 @@ const pageSchema = new mongoose.Schema(
       min: 0,
     },
 
+    // Importance score calculated via PageRank algorithm.
+    // Updated iteratively based on incoming link structure.
+    pagerank: {
+      type: Number,
+      default: 0,
+    },
+
     // Last crawl timestamp — updated on every upsert.
     // Distinct from createdAt (which Mongoose sets only on first insert).
     crawledAt: {

@@ -114,6 +114,38 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
     );
   }
 
+  // ── 3.5. Integrate PageRank ─────────────────────────────────────────────────
+  
+  if (candidates.length > 0) {
+    const candidateIds = candidates.map(c => c.docId);
+    const pagesData = await Page.find({ _id: { $in: candidateIds } }, { pagerank: 1 }).lean();
+    
+    const prMap = new Map();
+    for (const p of pagesData) {
+      prMap.set(p._id.toString(), p.pagerank || 0);
+    }
+
+    let maxTfIdf = 0;
+    for (const c of candidates) {
+      if (c.score > maxTfIdf) maxTfIdf = c.score;
+    }
+
+    const alpha = 0.7; // TF-IDF weight
+    const beta = 0.3;  // PageRank weight
+
+    for (const c of candidates) {
+      const pr = prMap.get(c.docId) || 0;
+      
+      // Normalize TF-IDF to 0-1 range so it doesn't completely eclipse PageRank
+      const normalizedTfIdf = maxTfIdf > 0 ? c.score / maxTfIdf : 0;
+      
+      // Scale PageRank by N so the average page has a score of ~1.0
+      const scaledPr = pr * N; 
+
+      c.score = (alpha * normalizedTfIdf) + (beta * scaledPr);
+    }
+  }
+
   // ── 4. Sort by score descending, slice to limit ─────────────────────────────
 
   candidates.sort((a, b) => b.score - a.score);
