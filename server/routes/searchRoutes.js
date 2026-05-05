@@ -29,8 +29,11 @@ const { indexAllDocuments }        = require("../indexer/indexBuilder");
  *
  * Query params:
  *   q          {string}  required — raw search query, e.g. "web crawler"
- *   strategy   {string}  optional — 'union' (default) | 'intersection'
+ *   mode       {string}  optional — 'union' (default) | 'intersection' (alias: strategy)
  *   limit      {number}  optional — max results (default 10, max 50)
+ *   page       {number}  optional — pagination (default 1)
+ *   alpha      {number}  optional — TF-IDF weight (default 0.7)
+ *   beta       {number}  optional — PageRank weight (default 0.3)
  */
 router.get("/search", async (req, res) => {
   try {
@@ -43,13 +46,18 @@ router.get("/search", async (req, res) => {
       });
     }
 
-    const strategy = ["union", "intersection"].includes(req.query.strategy)
-      ? req.query.strategy
+    const modeParam = req.query.mode || req.query.strategy;
+    const strategy = ["union", "intersection"].includes(modeParam)
+      ? modeParam
       : "union";
 
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    
+    const alpha = req.query.alpha !== undefined ? parseFloat(req.query.alpha) : 0.7;
+    const beta = req.query.beta !== undefined ? parseFloat(req.query.beta) : 0.3;
 
-    const result = await search(q, { strategy, limit });
+    const result = await search(q, { strategy, limit, page, alpha, beta });
 
     return res.status(200).json({
       success: true,

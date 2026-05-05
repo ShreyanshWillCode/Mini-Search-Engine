@@ -42,11 +42,11 @@ const { tokenizeToArray } = require("../indexer/tokenizer");
  *   results:  Array<{ url, title, score }>
  * }>}
  */
-async function search(queryString, { limit = 10, strategy = "union" } = {}) {
+async function search(queryString, { limit = 10, page = 1, strategy = "union", alpha = 0.7, beta = 0.3 } = {}) {
   const tokens = tokenizeToArray(queryString);
 
   if (tokens.length === 0) {
-    return { query: queryString, tokens: [], strategy, total: 0, results: [] };
+    return { query: queryString, tokens: [], strategy, total: 0, page, results: [] };
   }
 
   // ── 1. Fetch total doc count & posting lists concurrently ──────────────────
@@ -130,9 +130,6 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
       if (c.score > maxTfIdf) maxTfIdf = c.score;
     }
 
-    const alpha = 0.7; // TF-IDF weight
-    const beta = 0.3;  // PageRank weight
-
     for (const c of candidates) {
       const pr = prMap.get(c.docId) || 0;
       
@@ -146,10 +143,12 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
     }
   }
 
-  // ── 4. Sort by score descending, slice to limit ─────────────────────────────
+  // ── 4. Sort by score descending, paginate ─────────────────────────────
 
   candidates.sort((a, b) => b.score - a.score);
-  const topCandidates = candidates.slice(0, Math.max(1, parseInt(limit, 10) || 10));
+  
+  const startIndex = (page - 1) * limit;
+  const topCandidates = candidates.slice(startIndex, startIndex + limit);
 
   // ── 5. Enrichment: Snippets & Highlighting ──────────────────────────────────
   //
@@ -158,8 +157,8 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
   //
   const enrichedResults = await Promise.all(
     topCandidates.map(async (candidate) => {
-      const page = await Page.findById(candidate.docId, { content: 1 }).lean();
-      const content = page ? page.content : "";
+      const pageDoc = await Page.findById(candidate.docId, { content: 1 }).lean();
+      const content = pageDoc ? pageDoc.content : "";
       
       const snippet = generateHighlightedSnippet(content, tokens);
       
@@ -177,6 +176,8 @@ async function search(queryString, { limit = 10, strategy = "union" } = {}) {
     tokens,
     strategy,
     total:    candidates.length,
+    page,
+    totalPages: Math.ceil(candidates.length / limit),
     results:  enrichedResults,
   };
 }
