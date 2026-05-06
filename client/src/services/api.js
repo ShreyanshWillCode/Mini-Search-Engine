@@ -10,8 +10,8 @@ const api = axios.create({
 });
 
 export const searchService = {
-  search: (query, strategy = 'union', limit = 10) => 
-    api.get('/search', { params: { q: query, strategy, limit } }),
+  search: (query, alpha = 0.7, beta = 0.3, mode = 'union', limit = 10) => 
+    api.get('/search', { params: { q: query, alpha, beta, mode, limit } }),
   
   getStats: () => api.get('/index/stats'),
 };
