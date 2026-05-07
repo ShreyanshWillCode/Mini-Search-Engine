@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Search, Globe, Database, Activity, Trash2, 
-  ExternalLink, Loader2, Info, Settings, Code, Home, Sun, User
+  ExternalLink, Loader2, Info, Settings, Code, Home, Sun, User, Network
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { searchService, crawlerService } from './services/api';
 import HeroIntro from './components/HeroIntro';
+import VisualizationDashboard from './visualization/VisualizationDashboard';
 import './App.css';
 
 function App() {
   const [introComplete, setIntroComplete] = useState(false);
+  const [isVisualizing, setIsVisualizing] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [stats, setStats] = useState(null);
@@ -98,9 +100,15 @@ function App() {
 
   return (
     <>
+      <AnimatePresence>
+        {isVisualizing && (
+          <VisualizationDashboard onClose={() => setIsVisualizing(false)} />
+        )}
+      </AnimatePresence>
+
       {!introComplete && <HeroIntro onComplete={() => setIntroComplete(true)} />}
 
-      {introComplete && (
+      {introComplete && !isVisualizing && (
         <motion.div 
           className="dashboard-layout"
           initial={{ opacity: 0 }}
@@ -126,6 +134,9 @@ function App() {
               </button>
               <button className={`nav-item ${activeTab === 'crawler' ? 'active' : ''}`} onClick={() => setActiveTab('crawler')}>
                 <Activity size={20} /> Crawl Status
+              </button>
+              <button className="nav-item" onClick={() => setIsVisualizing(true)}>
+                <Network size={20} /> Visualize Graph
               </button>
               <button className="nav-item">
                 <Database size={20} /> Top Keywords

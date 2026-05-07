@@ -69,6 +69,9 @@ app.use("/api", searchRoutes);
 // Ranking API
 app.use("/api/rank", require("./routes/rankRoutes"));
 
+// Graph API
+app.use("/api/graph", require("./routes/graphRoutes"));
+
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, error: `Route ${req.method} ${req.path} not found.` });

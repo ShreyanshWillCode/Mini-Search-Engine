@@ -28,4 +28,8 @@ export const crawlerService = {
   clearData: () => api.delete('/crawl/pages'),
 };
 
+export const graphService = {
+  getGraphData: (limit = 500) => api.get('/graph', { params: { limit } })
+};
+
 export default api;
