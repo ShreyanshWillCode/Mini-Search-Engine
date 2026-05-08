@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Search, Globe, Database, Activity, Trash2, 
-  ExternalLink, Loader2, Info, Settings, Code, Home, Sun, User, Network
+  ExternalLink, Loader2, Info, Settings, Code, Home, Sun, User, Network, Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { searchService, crawlerService } from './services/api';
+import { searchService, crawlerService, autocompleteService, cacheService } from './services/api';
 import HeroIntro from './components/HeroIntro';
+import AutocompleteDropdown from './components/AutocompleteDropdown';
 import VisualizationDashboard from './visualization/VisualizationDashboard';
 import './App.css';
 
@@ -16,13 +17,22 @@ function App() {
   const [results, setResults] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('search'); // 'search', 'dashboard', 'crawler', etc.
+  const [activeTab, setActiveTab] = useState('search');
   const [searchInfo, setSearchInfo] = useState(null);
+
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionIdx, setSuggestionIdx] = useState(-1);
+  const debounceRef = useRef(null);
+
+  // Cache / performance state
+  const [cacheStats, setCacheStats] = useState(null);
 
   // Search Settings
   const [alpha, setAlpha] = useState(0.7);
   const [beta, setBeta] = useState(0.3);
-  const [searchMode, setSearchMode] = useState('union'); // 'union' or 'intersection'
+  const [searchMode, setSearchMode] = useState('union');
 
   // Crawler form state
   const [seedURL, setSeedURL] = useState('https://example.com');
@@ -32,9 +42,12 @@ function App() {
 
   useEffect(() => {
     fetchStats();
+    fetchCacheStats();
+    // Refresh cache stats every 30 seconds
+    const interval = setInterval(fetchCacheStats, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  // Update backend search with new params
   const fetchStats = async () => {
     try {
       const res = await searchService.getStats();
@@ -44,23 +57,59 @@ function App() {
     }
   };
 
-  const handleSearch = async (e) => {
+  const fetchCacheStats = async () => {
+    try {
+      const res = await cacheService.getStats();
+      setCacheStats(res.data);
+    } catch (err) {
+      // Redis may not be ready yet — silent fail
+    }
+  };
+
+  // Debounced autocomplete — fires 280ms after the user stops typing
+  const fetchSuggestions = useCallback((val) => {
+    clearTimeout(debounceRef.current);
+    if (!val || val.trim().length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await autocompleteService.getSuggestions(val);
+        setSuggestions(res.data.suggestions || []);
+        setShowSuggestions((res.data.suggestions || []).length > 0);
+        setSuggestionIdx(-1);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 280);
+  }, []);
+
+  const handleSearch = async (e, overrideQuery) => {
     if (e) e.preventDefault();
-    if (!query.trim()) return;
+    const q = overrideQuery || query;
+    if (!q.trim()) return;
+    setShowSuggestions(false);
+    setSuggestions([]);
 
     setLoading(true);
     try {
       const startTime = performance.now();
-      const res = await searchService.search(query, alpha, beta, searchMode);
+      const res = await searchService.search(q, alpha, beta, searchMode);
       const endTime = performance.now();
       
       setResults(res.data.results);
       setSearchInfo({
         time: (endTime - startTime).toFixed(2),
         total: res.data.total,
-        tokens: res.data.tokens
+        tokens: res.data.tokens,
+        fromCache: res.data.fromCache,
+        serverLatency: res.data.latencyMs,
       });
       setActiveTab('search');
+      // Refresh cache stats after search
+      setTimeout(fetchCacheStats, 500);
     } catch (err) {
       console.error('Search failed', err);
     } finally {
@@ -187,18 +236,56 @@ function App() {
           {/* Main Content Area */}
           <main className="main-feed">
             <div className="top-search-area">
-              <form onSubmit={handleSearch} className="sketchy-search-bar glass">
+              <form onSubmit={handleSearch} className="sketchy-search-bar glass" style={{position: 'relative'}}>
                 <Search className="s-icon" size={24} />
                 <input 
                   type="text" 
                   placeholder="Search the web..." 
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    fetchSuggestions(e.target.value);
+                  }}
+                  onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                  onKeyDown={(e) => {
+                    if (!showSuggestions) return;
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setSuggestionIdx(i => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setSuggestionIdx(i => Math.max(i - 1, -1));
+                    } else if ((e.key === 'Enter' || e.key === 'Tab') && suggestionIdx >= 0) {
+                      e.preventDefault();
+                      const chosen = suggestions[suggestionIdx].word;
+                      setQuery(chosen);
+                      setShowSuggestions(false);
+                      setSuggestionIdx(-1);
+                      handleSearch(null, chosen);
+                    } else if (e.key === 'Escape') {
+                      setShowSuggestions(false);
+                      setSuggestionIdx(-1);
+                    }
+                  }}
                 />
-                {query && <button type="button" className="clear-search" onClick={() => setQuery('')}>×</button>}
+                {query && <button type="button" className="clear-search" onClick={() => { setQuery(''); setSuggestions([]); setShowSuggestions(false); }}>×</button>}
                 <button type="submit" className="primary-btn" disabled={loading}>
                   {loading ? <Loader2 className="animate-spin" /> : 'Search'}
                 </button>
+
+                <AutocompleteDropdown
+                  suggestions={suggestions}
+                  query={query}
+                  visible={showSuggestions}
+                  selectedIdx={suggestionIdx}
+                  onSelect={(word) => {
+                    setQuery(word);
+                    setShowSuggestions(false);
+                    setSuggestionIdx(-1);
+                    handleSearch(null, word);
+                  }}
+                />
               </form>
 
               <div className="search-controls glass">
@@ -246,7 +333,14 @@ function App() {
 
             <div className="results-header">
               {searchInfo ? (
-                <span className="results-count">About {searchInfo.total} results ({searchInfo.time} seconds)</span>
+                <span className="results-count">
+                  About {searchInfo.total} results ({searchInfo.time}ms)
+                  {searchInfo.fromCache && (
+                    <span className="cache-badge" title="Served from Redis cache">
+                      <Zap size={11} /> Cache
+                    </span>
+                  )}
+                </span>
               ) : <span>Ready to search.</span>}
               <div className="sort-dropdown glass">
                 Sort by: Relevance <span>v</span>
@@ -468,6 +562,47 @@ function App() {
                   <span className="act-icon yellow">★</span>
                   <div className="act-content">Computed PageRank</div>
                   <span className="act-time">5m ago</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Cache Performance Panel */}
+            <div className="panel-section">
+              <div className="section-header">
+                <Zap size={18} className="purple-text" /> <h3>Cache Performance</h3>
+                {cacheStats?.cache?.connected
+                  ? <span className="cache-online-badge"><span className="status-dot active" style={{display:'inline-block'}}/> Redis Active</span>
+                  : <span className="cache-online-badge" style={{color:'#aaa'}}>⚪ Offline</span>
+                }
+              </div>
+              <div className="stats-grid" style={{gridTemplateColumns:'1fr 1fr'}}>
+                <div className="stat-box glass">
+                  <Zap size={16} className="purple-text" />
+                  <div className="s-info">
+                    <span className="s-lbl">Hit Rate</span>
+                    <span className="s-val">{cacheStats?.cache?.hitRate ?? '—'}</span>
+                  </div>
+                </div>
+                <div className="stat-box glass">
+                  <span className="text-icon blue-text">#</span>
+                  <div className="s-info">
+                    <span className="s-lbl">Cached Keys</span>
+                    <span className="s-val">{cacheStats?.cache?.keyCount ?? '—'}</span>
+                  </div>
+                </div>
+                <div className="stat-box glass">
+                  <span className="text-icon green-text">✓</span>
+                  <div className="s-info">
+                    <span className="s-lbl">Trie Words</span>
+                    <span className="s-val">{cacheStats?.trie?.wordCount ?? '—'}</span>
+                  </div>
+                </div>
+                <div className="stat-box glass">
+                  <span className="text-icon yellow-text">⚡</span>
+                  <div className="s-info">
+                    <span className="s-lbl">Memory</span>
+                    <span className="s-val" style={{fontSize:'0.85rem'}}>{cacheStats?.cache?.memoryUsed ?? '—'}</span>
+                  </div>
                 </div>
               </div>
             </div>

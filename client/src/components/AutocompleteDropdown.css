@@ -1,0 +1,109 @@
+/* ─── AutocompleteDropdown.css ───────────────────────────────────────────────
+   Glassmorphism floating dropdown — fits the sketchy light theme of the app.
+   Uses CSS variables defined in index.css for consistency.
+─────────────────────────────────────────────────────────────────────────────── */
+
+.autocomplete-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+/* Floating card */
+.autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 999;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 2px solid var(--border-color, #d0d0d0);
+  border-radius: 255px 8px 225px 8px / 8px 225px 8px 255px; /* sketchy corners */
+  box-shadow: 4px 6px 0px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  padding: 0.4rem 0;
+}
+
+/* Individual suggestion row */
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  font-size: 0.95rem;
+  color: var(--text-primary, #1a1a1a);
+}
+
+.suggestion-item:hover,
+.suggestion-item.keyboard-selected {
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.suggestion-item:active {
+  background: rgba(139, 92, 246, 0.15);
+}
+
+/* Search icon inside each row */
+.suggestion-icon {
+  color: var(--text-secondary, #777);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* Prefix highlight */
+.suggestion-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-text .match {
+  color: var(--accent-color, #8b5cf6);
+  font-weight: 700;
+}
+
+/* Frequency badge */
+.suggestion-freq {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #999);
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+/* Divider between suggestions */
+.suggestion-item + .suggestion-item {
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+/* Footer hint */
+.suggestion-footer {
+  padding: 0.4rem 1rem;
+  font-size: 0.7rem;
+  color: var(--text-secondary, #aaa);
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+}
+
+.suggestion-footer kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: monospace;
+  font-size: 0.65rem;
+}

@@ -20,9 +20,10 @@
 
 "use strict";
 
-const InvertedIndex      = require("../models/InvertedIndex");
-const Page               = require("../models/Page");
+const InvertedIndex       = require("../models/InvertedIndex");
+const Page                = require("../models/Page");
 const { tokenizeToArray } = require("../indexer/tokenizer");
+const cache               = require("../cache/cacheManager");
 
 // ── Core export ───────────────────────────────────────────────────────────────
 
@@ -43,10 +44,21 @@ const { tokenizeToArray } = require("../indexer/tokenizer");
  * }>}
  */
 async function search(queryString, { limit = 10, page = 1, strategy = "union", alpha = 0.7, beta = 0.3 } = {}) {
+  const t0     = Date.now();
   const tokens = tokenizeToArray(queryString);
 
   if (tokens.length === 0) {
-    return { query: queryString, tokens: [], strategy, total: 0, page, results: [] };
+    return { query: queryString, tokens: [], strategy, total: 0, page, results: [], fromCache: false, latencyMs: 0 };
+  }
+
+  // ── 0. Cache lookup ─────────────────────────────────────────────────────────
+  //
+  // Cache key encodes every parameter that can affect the result set.
+  //
+  const cacheKey = `${queryString.toLowerCase()}|${strategy}|a${alpha}|b${beta}|p${page}|l${limit}`;
+  const cached   = await cache.get("search", cacheKey);
+  if (cached) {
+    return { ...cached, fromCache: true, latencyMs: Date.now() - t0 };
   }
 
   // ── 1. Fetch total doc count & posting lists concurrently ──────────────────
@@ -79,8 +91,7 @@ async function search(queryString, { limit = 10, page = 1, strategy = "union", a
     if (!postingList || !postingList.documents) continue;
 
     // IDF = log10(Total Docs / Docs containing this word)
-    // We add 1 to denominator to avoid division by zero (though posting list exists)
-    const df = postingList.documents.length;
+    const df  = postingList.documents.length;
     const idf = Math.log10(N / df);
 
     for (const posting of postingList.documents) {
@@ -89,7 +100,7 @@ async function search(queryString, { limit = 10, page = 1, strategy = "union", a
 
       if (scoreMap.has(docId)) {
         const entry = scoreMap.get(docId);
-        entry.score        += tfIdfScore;
+        entry.score         += tfIdfScore;
         entry.matchedTokens += 1;
       } else {
         scoreMap.set(docId, {
@@ -108,18 +119,19 @@ async function search(queryString, { limit = 10, page = 1, strategy = "union", a
   let candidates = [...scoreMap.values()];
 
   if (strategy === "intersection") {
-    // Keep only docs that matched every token
     candidates = candidates.filter(
       (entry) => entry.matchedTokens === tokens.length
     );
   }
 
   // ── 3.5. Integrate PageRank ─────────────────────────────────────────────────
-  
+
   if (candidates.length > 0) {
-    const candidateIds = candidates.map(c => c.docId);
-    const pagesData = await Page.find({ _id: { $in: candidateIds } }, { pagerank: 1 }).lean();
-    
+    const candidateIds = candidates.map((c) => c.docId);
+    const pagesData    = await Page
+      .find({ _id: { $in: candidateIds } }, { pagerank: 1 })
+      .lean();
+
     const prMap = new Map();
     for (const p of pagesData) {
       prMap.set(p._id.toString(), p.pagerank || 0);
@@ -131,55 +143,62 @@ async function search(queryString, { limit = 10, page = 1, strategy = "union", a
     }
 
     for (const c of candidates) {
-      const pr = prMap.get(c.docId) || 0;
-      
-      // Normalize TF-IDF to 0-1 range so it doesn't completely eclipse PageRank
+      const pr              = prMap.get(c.docId) || 0;
       const normalizedTfIdf = maxTfIdf > 0 ? c.score / maxTfIdf : 0;
-      
-      // Scale PageRank by N so the average page has a score of ~1.0
-      const scaledPr = pr * N; 
-
+      const scaledPr        = pr * N;
       c.score = (alpha * normalizedTfIdf) + (beta * scaledPr);
     }
   }
 
-  // ── 4. Sort by score descending, paginate ─────────────────────────────
+  // ── 4. Sort by score descending, paginate ──────────────────────────────────
 
   candidates.sort((a, b) => b.score - a.score);
-  
-  const startIndex = (page - 1) * limit;
+
+  const startIndex    = (page - 1) * limit;
   const topCandidates = candidates.slice(startIndex, startIndex + limit);
 
-  // ── 5. Enrichment: Snippets & Highlighting ──────────────────────────────────
+  // ── 5. Enrichment: Snippets & Highlighting (BATCHED) ────────────────────────
   //
-  // To show snippets, we need the actual page content.
-  // We fetch only the 'content' field for the top results.
+  // OPTIMIZATION: One single Page.find({ $in: ids }) replaces N sequential
+  // Page.findById() calls — reduces DB round-trips from O(N) to O(1).
   //
-  const enrichedResults = await Promise.all(
-    topCandidates.map(async (candidate) => {
-      const pageDoc = await Page.findById(candidate.docId, { content: 1 }).lean();
-      const content = pageDoc ? pageDoc.content : "";
-      
-      const snippet = generateHighlightedSnippet(content, tokens);
-      
-      return {
-        url:     candidate.url,
-        title:   candidate.title,
-        score:   +(candidate.score.toFixed(4)),
-        snippet,
-      };
-    })
-  );
+  const topIds      = topCandidates.map((c) => c.docId);
+  const contentDocs = await Page
+    .find({ _id: { $in: topIds } }, { content: 1 })
+    .lean();
 
-  return {
-    query:    queryString,
+  const contentMap = new Map();
+  for (const doc of contentDocs) {
+    contentMap.set(doc._id.toString(), doc.content || "");
+  }
+
+  const enrichedResults = topCandidates.map((candidate) => {
+    const content = contentMap.get(candidate.docId) || "";
+    const snippet = generateHighlightedSnippet(content, tokens);
+    return {
+      url:     candidate.url,
+      title:   candidate.title,
+      score:   +(candidate.score.toFixed(4)),
+      snippet,
+    };
+  });
+
+  const result = {
+    query:      queryString,
     tokens,
     strategy,
-    total:    candidates.length,
+    total:      candidates.length,
     page,
     totalPages: Math.ceil(candidates.length / limit),
-    results:  enrichedResults,
+    results:    enrichedResults,
+    fromCache:  false,
+    latencyMs:  Date.now() - t0,
   };
+
+  // ── 6. Store in Redis cache ─────────────────────────────────────────────────
+  await cache.set("search", cacheKey, result);
+
+  return result;
 }
 
 /**

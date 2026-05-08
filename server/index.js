@@ -18,16 +18,25 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 
-const connectDB      = require("./config/db");
-const crawlerRoutes  = require("./routes/crawlerRoutes");
-const searchRoutes   = require("./routes/searchRoutes");
+const connectDB          = require("./config/db");
+const crawlerRoutes      = require("./routes/crawlerRoutes");
+const searchRoutes       = require("./routes/searchRoutes");
 
-// Warm-start the index queue singleton so its background timer is running
-// before the first crawl request arrives (avoids lazy-init on first push).
+// Redis client — imported early so the connection is established before routes
+require("./config/redisClient");
+
+// Warm-start the index queue singleton
 require("./indexer/indexQueue");
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
-connectDB();
+const { buildTrie } = require("./autocomplete/suggestionService");
+
+connectDB().then(() => {
+  // Build Trie after DB is connected so all indexed words are available
+  buildTrie().catch((err) =>
+    console.error("[Startup] Trie build error:", err.message)
+  );
+});
 
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express();

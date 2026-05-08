@@ -32,4 +32,13 @@ export const graphService = {
   getGraphData: (limit = 500) => api.get('/graph', { params: { limit } })
 };
 
+export const autocompleteService = {
+  getSuggestions: (prefix, limit = 8) =>
+    api.get('/autocomplete', { params: { q: prefix, limit } }),
+};
+
+export const cacheService = {
+  getStats: () => api.get('/cache/stats'),
+};
+
 export default api;
