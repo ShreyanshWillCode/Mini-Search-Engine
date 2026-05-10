@@ -42,7 +42,13 @@ connectDB().then(() => {
 const app = express();
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors());
+// Allow CORS for the frontend origin
+const corsOptions = {
+  origin: process.env.CLIENT_URL || '*', // Set this to your Vercel URL in production
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(morgan("dev"));
