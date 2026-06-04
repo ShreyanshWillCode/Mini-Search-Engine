@@ -41,4 +41,9 @@ export const cacheService = {
   getStats: () => api.get('/cache/stats'),
 };
 
+export const aiService = {
+  aiSearch: (query, alpha = 0.7, beta = 0.3, strategy = 'union', topK = 5) =>
+    api.post('/ai-search', { query, alpha, beta, strategy, topK }),
+};
+
 export default api;

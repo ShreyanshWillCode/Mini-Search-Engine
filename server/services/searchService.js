@@ -286,4 +286,108 @@ async function getIndexStats() {
   return { totalWords, totalPostings, topWords };
 }
 
-module.exports = { search, getIndexStats };
+/**
+ * searchWithContent(queryString, options)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Identical to search() but includes the full `content` field in each result.
+ * Used exclusively by the AI service (RAG pipeline) to build Gemini context.
+ *
+ * We keep this separate from search() to avoid sending large content payloads
+ * over the wire in normal search API responses.
+ */
+async function searchWithContent(queryString, options = {}) {
+  const { limit = 5, page = 1, strategy = "union", alpha = 0.7, beta = 0.3 } = options;
+  const t0     = Date.now();
+  const tokens = tokenizeToArray(queryString);
+
+  if (tokens.length === 0) {
+    return { query: queryString, tokens: [], strategy, total: 0, results: [], latencyMs: 0 };
+  }
+
+  // Fetch posting lists + total doc count concurrently
+  const [totalDocs, ...postingLists] = await Promise.all([
+    Page.countDocuments(),
+    ...tokens.map((token) =>
+      InvertedIndex.findOne({ word: token }, { documents: 1, _id: 0 }).lean()
+    ),
+  ]);
+
+  const N        = totalDocs || 1;
+  const scoreMap = new Map();
+
+  for (let i = 0; i < tokens.length; i++) {
+    const postingList = postingLists[i];
+    if (!postingList || !postingList.documents) continue;
+
+    const df  = postingList.documents.length;
+    const idf = Math.log10(N / df);
+
+    for (const posting of postingList.documents) {
+      const { docId, url, title, frequency } = posting;
+      const tfIdfScore = frequency * idf;
+
+      if (scoreMap.has(docId)) {
+        const entry = scoreMap.get(docId);
+        entry.score         += tfIdfScore;
+        entry.matchedTokens += 1;
+      } else {
+        scoreMap.set(docId, { docId, url, title, score: tfIdfScore, matchedTokens: 1 });
+      }
+    }
+  }
+
+  let candidates = [...scoreMap.values()];
+  if (strategy === "intersection") {
+    candidates = candidates.filter((e) => e.matchedTokens === tokens.length);
+  }
+
+  // Integrate PageRank
+  if (candidates.length > 0) {
+    const pagesData = await Page
+      .find({ _id: { $in: candidates.map((c) => c.docId) } }, { pagerank: 1 })
+      .lean();
+    const prMap = new Map(pagesData.map((p) => [p._id.toString(), p.pagerank || 0]));
+
+    let maxTfIdf = Math.max(...candidates.map((c) => c.score), 0);
+    for (const c of candidates) {
+      const pr              = prMap.get(c.docId) || 0;
+      const normalizedTfIdf = maxTfIdf > 0 ? c.score / maxTfIdf : 0;
+      c.score = (alpha * normalizedTfIdf) + (beta * pr * N);
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const topCandidates = candidates.slice((page - 1) * limit, page * limit);
+
+  // Fetch full content for AI context (includes 'content' field)
+  const contentDocs = await Page
+    .find({ _id: { $in: topCandidates.map((c) => c.docId) } }, { content: 1 })
+    .lean();
+
+  const contentMap = new Map(contentDocs.map((d) => [d._id.toString(), d.content || ""]));
+
+  const results = topCandidates.map((candidate) => {
+    const content = contentMap.get(candidate.docId) || "";
+    const snippet = generateHighlightedSnippet(content, tokens);
+    return {
+      url:     candidate.url,
+      title:   candidate.title,
+      score:   +(candidate.score.toFixed(4)),
+      snippet,
+      content, // ← full content for AI context building
+    };
+  });
+
+  return {
+    query:   queryString,
+    tokens,
+    strategy,
+    total:   candidates.length,
+    results,
+    latencyMs: Date.now() - t0,
+  };
+}
+
+module.exports = { search, searchWithContent, getIndexStats };
+

@@ -4,7 +4,8 @@ import {
   ExternalLink, Loader2, Info, Settings, Code, Home, Sun, User, Network, Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { searchService, crawlerService, autocompleteService, cacheService } from './services/api';
+import { searchService, crawlerService, autocompleteService, cacheService, aiService } from './services/api';
+import AIAnswerCard from './components/AIAnswerCard';
 import HeroIntro from './components/HeroIntro';
 import AutocompleteDropdown from './components/AutocompleteDropdown';
 import VisualizationDashboard from './visualization/VisualizationDashboard';
@@ -33,6 +34,12 @@ function App() {
   const [alpha, setAlpha] = useState(0.7);
   const [beta, setBeta] = useState(0.3);
   const [searchMode, setSearchMode] = useState('union');
+
+  // AI Answer Mode state
+  const [aiMode, setAiMode]       = useState(false);
+  const [aiAnswer, setAiAnswer]   = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError]     = useState(null);
 
   // Crawler form state
   const [seedURL, setSeedURL] = useState('https://example.com');
@@ -92,28 +99,88 @@ function App() {
     if (!q.trim()) return;
     setShowSuggestions(false);
     setSuggestions([]);
+    setActiveTab('search');
 
     setLoading(true);
+
+    // If AI mode is on, reset AI state and run both calls concurrently
+    if (aiMode) {
+      setAiAnswer(null);
+      setAiError(null);
+      setAiLoading(true);
+    }
+
     try {
       const startTime = performance.now();
-      const res = await searchService.search(q, alpha, beta, searchMode);
-      const endTime = performance.now();
-      
-      setResults(res.data.results);
-      setSearchInfo({
-        time: (endTime - startTime).toFixed(2),
-        total: res.data.total,
-        tokens: res.data.tokens,
-        fromCache: res.data.fromCache,
-        serverLatency: res.data.latencyMs,
-      });
-      setActiveTab('search');
-      // Refresh cache stats after search
+
+      if (aiMode) {
+        // Run traditional search + AI search concurrently
+        const [searchRes, aiRes] = await Promise.allSettled([
+          searchService.search(q, alpha, beta, searchMode),
+          aiService.aiSearch(q, alpha, beta, searchMode),
+        ]);
+
+        const endTime = performance.now();
+
+        if (searchRes.status === 'fulfilled') {
+          const d = searchRes.value.data;
+          setResults(d.results);
+          setSearchInfo({
+            time: (endTime - startTime).toFixed(2),
+            total: d.total,
+            tokens: d.tokens,
+            fromCache: d.fromCache,
+            serverLatency: d.latencyMs,
+          });
+        }
+
+        if (aiRes.status === 'fulfilled') {
+          setAiAnswer(aiRes.value.data);
+          setAiError(null);
+        } else {
+          const msg = aiRes.reason?.response?.data?.error || aiRes.reason?.message || 'AI answer failed.';
+          setAiError(msg);
+          setAiAnswer(null);
+        }
+        setAiLoading(false);
+
+      } else {
+        // Traditional search only
+        const res = await searchService.search(q, alpha, beta, searchMode);
+        const endTime = performance.now();
+        setResults(res.data.results);
+        setSearchInfo({
+          time: (endTime - startTime).toFixed(2),
+          total: res.data.total,
+          tokens: res.data.tokens,
+          fromCache: res.data.fromCache,
+          serverLatency: res.data.latencyMs,
+        });
+      }
+
       setTimeout(fetchCacheStats, 500);
     } catch (err) {
       console.error('Search failed', err);
+      setAiLoading(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Regenerate AI answer bypassing cache by sending regenerate=true
+  const handleRegenerate = async () => {
+    if (!query.trim()) return;
+    setAiLoading(true);
+    setAiAnswer(null);
+    setAiError(null);
+    try {
+      const res = await aiService.aiSearch(query, alpha, beta, searchMode);
+      setAiAnswer(res.data);
+    } catch (err) {
+      const msg = err?.response?.data?.error || err.message || 'Regeneration failed.';
+      setAiError(msg);
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -291,13 +358,19 @@ function App() {
               <div className="search-controls glass">
                 <div className="mode-toggle">
                   <button 
-                    className={`toggle-btn ${searchMode === 'union' ? 'active' : ''}`}
-                    onClick={() => setSearchMode('union')}
-                  >Union Search</button>
+                    className={`toggle-btn ${!aiMode && searchMode === 'union' ? 'active' : ''}`}
+                    onClick={() => { setSearchMode('union'); setAiMode(false); }}
+                  >Union</button>
                   <button 
-                    className={`toggle-btn ${searchMode === 'intersection' ? 'active' : ''}`}
-                    onClick={() => setSearchMode('intersection')}
-                  >Intersection Search</button>
+                    className={`toggle-btn ${!aiMode && searchMode === 'intersection' ? 'active' : ''}`}
+                    onClick={() => { setSearchMode('intersection'); setAiMode(false); }}
+                  >Intersection</button>
+                  <button
+                    className={`toggle-btn ai-mode-btn ${aiMode ? 'active ai-active' : ''}`}
+                    onClick={() => setAiMode(m => !m)}
+                  >
+                    ✨ AI Answer
+                  </button>
                 </div>
                 
                 <div className="sliders">
@@ -348,6 +421,20 @@ function App() {
             </div>
 
             <div className="results-list">
+              {/* AI Answer Card — shown above traditional results in AI mode */}
+              {activeTab === 'search' && aiMode && (aiAnswer || aiLoading || aiError) && (
+                <AIAnswerCard
+                  answer={aiAnswer?.answer}
+                  sources={aiAnswer?.sources || []}
+                  confidence={aiAnswer?.confidence ?? 0}
+                  latencyMs={aiAnswer?.latencyMs}
+                  fromCache={aiAnswer?.fromCache}
+                  loading={aiLoading}
+                  error={aiError}
+                  onRegenerate={handleRegenerate}
+                />
+              )}
+
               {activeTab === 'crawler' && (
                  <div className="crawler-card glass" style={{marginTop: '2rem'}}>
                  <h2><Globe size={20} /> Configure Crawler</h2>

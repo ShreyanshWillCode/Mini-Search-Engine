@@ -143,4 +143,47 @@ router.get("/index/stats", async (req, res) => {
   }
 });
 
+// ── POST /api/ai-search ───────────────────────────────────────────────────────
+/**
+ * RAG-powered AI Answer endpoint.
+ *
+ * Body: { query, strategy?, alpha?, beta?, topK?, regenerate? }
+ *
+ * Response:
+ *   { success, answer, sources, confidence, tokens, latencyMs, fromCache }
+ *
+ * Returns 503 if GEMINI_API_KEY is not set.
+ * Returns 400 if query is empty.
+ */
+router.post("/ai-search", async (req, res) => {
+  try {
+    const { aiSearch } = require("../ai/aiService");
+
+    const query     = (req.body.query || "").trim();
+    const strategy  = req.body.strategy  || "union";
+    const alpha     = parseFloat(req.body.alpha  ?? 0.7);
+    const beta      = parseFloat(req.body.beta   ?? 0.3);
+    const topK      = Math.min(10, Math.max(1, parseInt(req.body.topK ?? 5, 10)));
+
+    if (!query) {
+      return res.status(400).json({ success: false, error: "Query is required." });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error:   "AI mode is not configured. Add GEMINI_API_KEY to your server environment.",
+      });
+    }
+
+    const result = await aiSearch(query, { strategy, alpha, beta, topK });
+    return res.status(200).json({ success: true, ...result });
+
+  } catch (err) {
+    console.error("[AI Search] Error:", err.message);
+    // Surface a friendly message for timeout / Gemini errors
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
